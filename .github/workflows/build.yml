@@ -1,0 +1,181 @@
+name: Build Linux Packages
+
+on:
+  # Manual trigger — always builds, even if release exists
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Architecture (x64 or arm64)'
+        required: false
+        default: 'x64'
+        type: choice
+        options:
+          - x64
+          - arm64
+      force:
+        description: 'Force rebuild even if release exists'
+        required: false
+        default: false
+        type: boolean
+
+  # Daily auto-check for new versions (skips if release already exists)
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Test on workflow/build script changes
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'scripts/build-linux.sh'
+      - 'scripts/make-arch-pkg.sh'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'scripts/build-linux.sh'
+      - 'scripts/make-arch-pkg.sh'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine arch
+        id: arch
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "arch=x64" >> "$GITHUB_OUTPUT"
+          else
+            echo "arch=${{ inputs.arch || 'x64' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Discover latest DMG URL
+        id: discover
+        run: |
+          OUTPUT=$(bash scripts/discover-dmg-url.sh --arch "${{ steps.arch.outputs.arch }}")
+          echo "$OUTPUT"
+          DMG_URL=$(echo "$OUTPUT" | grep '^URL=' | cut -d= -f2-)
+          VERSION=$(echo "$OUTPUT" | grep '^VERSION=' | cut -d= -f2-)
+          {
+            echo "url=$DMG_URL"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: exists
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.force)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.discover.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.discover.outputs.version }} already exists — skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download DMG
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          echo "Downloading ${{ steps.discover.outputs.url }}"
+          curl -L --retry 3 --retry-delay 5 -o "CatPawAI-${{ steps.arch.outputs.arch }}.dmg" \
+            "${{ steps.discover.outputs.url }}"
+          ls -lh "CatPawAI-${{ steps.arch.outputs.arch }}.dmg"
+
+      - name: Setup Node.js 22
+        if: steps.exists.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install build dependencies
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential python3 python3-dev \
+            p7zip-full unzip \
+            libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 \
+            zstd libarchive-tools desktop-file-utils
+
+      - name: Cache Electron download
+        if: steps.exists.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: scripts/downloads
+          key: electron-35.5.1-linux-${{ steps.arch.outputs.arch }}
+
+      - name: Build Linux packages
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          cd scripts
+          bash build-linux.sh --arch "${{ steps.arch.outputs.arch }}"
+
+      - name: Create Arch pacman package
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          ARCH="${{ steps.arch.outputs.arch }}"
+          TAR=$(ls scripts/out/CatPawAI-linux-${ARCH}-*.tar.gz | head -1)
+          bash scripts/make-arch-pkg.sh "$TAR" scripts/out/
+
+      - name: Verify output
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lh scripts/out/*.tar.gz scripts/out/*.deb scripts/out/*.pkg.tar.zst 2>/dev/null
+
+      - name: Upload artifacts
+        if: steps.exists.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CatPawAI-linux-${{ steps.arch.outputs.arch }}-${{ steps.discover.outputs.version }}
+          path: scripts/out/*.tar.gz
+          retention-days: 30
+
+      - name: Create release
+        if: steps.exists.outputs.skip != 'true' && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.discover.outputs.version }}
+          name: CatPawAI ${{ steps.discover.outputs.version }} (Linux ${{ steps.arch.outputs.arch }})
+          body: |
+            CatPawAI Linux build (from macOS DMG ${{ steps.discover.outputs.version }})
+
+            **Architecture:** ${{ steps.arch.outputs.arch }}
+            **Source:** ${{ steps.discover.outputs.url }}
+
+            ## Install
+
+            ### Arch Linux (pacman)
+            ```bash
+            sudo pacman -U catpawai-${{ steps.discover.outputs.version }}-1-*.pkg.tar.zst
+            catpawai
+            ```
+
+            ### Debian/Ubuntu (deb)
+            ```bash
+            sudo dpkg -i CatPawAI-linux-*.deb
+            catpawai
+            ```
+
+            ### Portable (tar.gz)
+            ```bash
+            sudo tar xzf CatPawAI-linux-*.tar.gz -C /opt/
+            sudo ln -sf /opt/CatPawAI-linux-*/bin/catpawai /usr/local/bin/catpawai
+            catpawai
+            ```
+          files: |
+            scripts/out/*.tar.gz
+            scripts/out/*.deb
+            scripts/out/*.pkg.tar.zst
+          draft: false
+          prerelease: false
