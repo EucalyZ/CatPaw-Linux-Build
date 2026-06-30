@@ -1,0 +1,28 @@
+# Build inputs (proprietary — extracted from DMG, do not distribute)
+scripts/extracted/
+scripts/_dmg-raw/
+*.dmg
+
+# Build outputs (regenerable, large)
+scripts/out/
+*.tar.gz
+*.deb
+*.pkg.tar.*
+*.rpm
+*.AppImage
+
+# Build intermediate / temp
+scripts/build/
+scripts/downloads/
+scripts/build.log
+scripts/*.log
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

@@ -1,0 +1,16 @@
+{
+  "name": "catpawai-linux-build",
+  "version": "2026.2.3",
+  "description": "CatPawAI Linux build system - converts macOS DMG to Linux packages",
+  "private": true,
+  "scripts": {
+    "extract": "pwsh extract-dmg.ps1",
+    "build": "pwsh build.ps1",
+    "build:x64": "pwsh build.ps1 -Arch x64",
+    "build:arm64": "pwsh build.ps1 -Arch arm64",
+    "build:wsl": "bash scripts/build-linux.sh"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1"
+  }
+}
