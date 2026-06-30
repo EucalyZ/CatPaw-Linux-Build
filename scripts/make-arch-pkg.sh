@@ -18,6 +18,12 @@ set -euo pipefail
 
 INPUT="${1:?usage: $0 <stage_dir|tar.gz> [out_dir]}"
 OUT_DIR="${2:-.}"
+# Resolve to absolute path — the script cd's into a temp dir later, so a
+# relative OUT_DIR would break zstd -o "$PKG_PATH".
+OUT_DIR="$(cd "$OUT_DIR" 2>/dev/null && pwd)" || {
+  err "output dir does not exist: $OUT_DIR"
+  exit 1
+}
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[$(date +%H:%M:%S)]${NC} $*"; }
