@@ -131,6 +131,7 @@ EOF
 # .MTREE — gzipped file manifest (matches makepkg output). Optional but
 # expected by tooling like pacman -F.
 log "Generating .MTREE..."
+# .MTREE is optional (used by pacman -F file search). Failures here are non-fatal.
 ( cd "$PKG_DIR" && \
   bsdtar --format=mtree \
     --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256' \
@@ -140,8 +141,17 @@ log "Generating .MTREE..."
 PKG_PATH="$OUT_DIR/catpawai-${CATPAW_VERSION}-1-${PACMAN_ARCH}.pkg.tar.zst"
 mkdir -p "$OUT_DIR"
 log "Creating $(basename "$PKG_PATH")..."
+
+# Create uncompressed .pkg.tar first, then zstd-compress. Older libarchive
+# (Ubuntu 22.04 ships 3.4.2) doesn't support `bsdtar --zstd`, so pipe through
+# the zstd binary instead — works everywhere zstd is installed.
 ( cd "$PKG_DIR" && \
-  bsdtar --create --zstd -f "$PKG_PATH" .PKGINFO .MTREE usr 2>/dev/null )
+  bsdtar --format=pax -cf - .PKGINFO .MTREE usr 2>"$WORK/bsdtar.err" | \
+  zstd -19 -T0 -o "$PKG_PATH" ) || {
+    err "bsdtar/zstd failed:"
+    cat "$WORK/bsdtar.err" >&2
+    exit 1
+  }
 
 if [[ ! -f "$PKG_PATH" ]]; then
   err "Failed to create pacman package"
