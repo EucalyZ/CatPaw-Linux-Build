@@ -4,15 +4,15 @@ set -euo pipefail
 #=============================================================================
 # CatPawAI Linux Build Script
 #
-# This script runs in WSL2 (Ubuntu) and builds a Linux version of CatPawAI
+# Runs on native Linux (or WSL2) and builds a Linux version of CatPawAI
 # from the macOS DMG resources.
 #
 # Usage:
 #   ./build-linux.sh [--arch x64|arm64] [--skip-extract] [--skip-download]
 #
 # Requirements:
-#   - WSL2 Ubuntu with build-essential, python3, nodejs
-#   - 7zip installed in Windows (for DMG extraction)
+#   - Linux (native or WSL2) with build-essential, python3, nodejs
+#   - p7zip (for DMG extraction)
 #   - The DMG file at ../CatPawAI-x64*.dmg
 #=============================================================================
 
@@ -20,7 +20,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Use native Linux filesystem (/tmp) for intermediate operations — 10-100x faster than /mnt/c/
+# Use native Linux filesystem (/tmp) for intermediate operations — much faster
+# than working on a Windows-mounted FS when running under WSL2.
 TMP_ROOT="/tmp/catpawai-build"
 BUILD_DIR="$TMP_ROOT/build"
 EXTRACTED_DIR="$TMP_ROOT/extracted"
@@ -34,8 +35,8 @@ APP_VERSION="1.101.0"
 CATPAW_VERSION="2026.2.3"
 BUNDLE_ID="com.catpaw.ide"
 
-# Architecture
-ARCH="${1:-x64}"
+# Architecture (default; overridden by --arch below)
+ARCH="x64"
 # Map to Electron arch naming
 ELECTRON_ARCH="$ARCH"  # x64 or arm64
 
@@ -131,7 +132,7 @@ if ! $SKIP_EXTRACT; then
     DMG_PATH=""
     for candidate in \
       "$PROJECT_ROOT/CatPawAI-x64"*.dmg \
-      "/mnt/c/LinuxBackup/catpaw-linux/CatPawAI-x64"*.dmg; do
+      "$PROJECT_ROOT/CatPawAI-arm64"*.dmg; do
       if ls $candidate 1>/dev/null 2>&1; then
         DMG_PATH=$(ls $candidate 2>/dev/null | head -1)
         break
@@ -139,14 +140,14 @@ if ! $SKIP_EXTRACT; then
     done
 
     if [[ -z "$DMG_PATH" ]]; then
-      err "DMG file not found. Run extract-dmg.ps1 on Windows first."
-      err "Or place the extracted app in: $EXTRACTED_DIR/app/"
+      err "DMG file not found. Place CatPawAI-x64*.dmg in: $PROJECT_ROOT/"
+      err "Or pre-extract the app to: $EXTRACTED_DIR/app/"
       exit 1
     fi
 
     log "DMG: $DMG_PATH"
 
-    # Find 7zip (prefer Linux p7zip over Windows 7z.exe for path compatibility)
+    # Find 7zip
     SEVENZ=""
     if command -v 7z &>/dev/null; then
       SEVENZ="7z"
@@ -195,12 +196,15 @@ fi
 #=============================================================================
 # Phase 2: Download Electron for Linux
 #=============================================================================
+# Defaults are also used when --skip-download is passed (Electron must already
+# be extracted at this path by a prior run).
+ELECTRON_ZIP="$DOWNLOAD_DIR/electron-v${ELECTRON_VERSION}-linux-${ELECTRON_ARCH}.zip"
+ELECTRON_EXTRACT="$DOWNLOAD_DIR/electron-linux-${ELECTRON_ARCH}"
+
 if ! $SKIP_DOWNLOAD; then
   log "${CYAN}== Phase 2: Download Electron ${ELECTRON_VERSION} for Linux-${ARCH} ==${NC}"
 
   ELECTRON_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-${ELECTRON_ARCH}.zip"
-  ELECTRON_ZIP="$DOWNLOAD_DIR/electron-v${ELECTRON_VERSION}-linux-${ELECTRON_ARCH}.zip"
-  ELECTRON_EXTRACT="$DOWNLOAD_DIR/electron-linux-${ELECTRON_ARCH}"
 
   mkdir -p "$DOWNLOAD_DIR"
 
@@ -772,24 +776,22 @@ fi
 rm -rf "$DEB_DIR"
 
 #=============================================================================
-# Phase 6c: Create pacman package (Arch Linux)
+# Phase 6c: Create pacman package (.pkg.tar.zst)
 #=============================================================================
 log "${CYAN}== Phase 6c: Create pacman (.pkg.tar.zst) package ==${NC}"
 
-IS_ARCH=false
-if [[ -f /etc/arch-release ]] || grep -qiE '^(ID|ID_LIKE)=.*arch' /etc/os-release 2>/dev/null; then
-  IS_ARCH=true
-fi
-
-if $IS_ARCH && command -v bsdtar >/dev/null 2>&1 && command -v zstd >/dev/null 2>&1; then
+# make-arch-pkg.sh only needs bsdtar (libarchive) + zstd to BUILD the package;
+# pacman is only used for an optional -Qp validation. Produce the pacman
+# package on any distro that has those two tools, not just Arch.
+if command -v bsdtar >/dev/null 2>&1 && command -v zstd >/dev/null 2>&1; then
   if bash "$SCRIPT_DIR/make-arch-pkg.sh" "$STAGE_DIR" "$OUT_DIR"; then
     log "   pacman package created"
   else
     warn "   pacman package creation failed"
   fi
 else
-  warn "   Not on Arch or bsdtar/zstd missing — skipping pacman package"
-  warn "   (this is normal on Debian/Ubuntu/WSL2; the tar.gz/.deb are still produced)"
+  warn "   bsdtar/zstd not installed — skipping pacman package"
+  warn "   (install libarchive-tools and zstd to enable)"
 fi
 
 #=============================================================================

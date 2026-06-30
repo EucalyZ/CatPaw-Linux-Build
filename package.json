@@ -4,13 +4,11 @@
   "description": "CatPawAI Linux build system - converts macOS DMG to Linux packages",
   "private": true,
   "scripts": {
-    "extract": "pwsh extract-dmg.ps1",
-    "build": "pwsh build.ps1",
-    "build:x64": "pwsh build.ps1 -Arch x64",
-    "build:arm64": "pwsh build.ps1 -Arch arm64",
-    "build:wsl": "bash scripts/build-linux.sh"
+    "build": "bash scripts/build-linux.sh",
+    "build:x64": "bash scripts/build-linux.sh --arch x64",
+    "build:arm64": "bash scripts/build-linux.sh --arch arm64"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1"
+    "@electron/rebuild": "^3.7.2"
   }
 }

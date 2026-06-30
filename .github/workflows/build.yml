@@ -112,7 +112,7 @@ jobs:
         if: steps.exists.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
-          path: scripts/downloads
+          path: /tmp/catpawai-build/downloads
           key: electron-35.5.1-linux-${{ steps.arch.outputs.arch }}
 
       - name: Build Linux packages
@@ -120,13 +120,6 @@ jobs:
         run: |
           cd scripts
           bash build-linux.sh --arch "${{ steps.arch.outputs.arch }}"
-
-      - name: Create Arch pacman package
-        if: steps.exists.outputs.skip != 'true'
-        run: |
-          ARCH="${{ steps.arch.outputs.arch }}"
-          TAR=$(ls scripts/out/CatPawAI-linux-${ARCH}-*.tar.gz | head -1)
-          bash scripts/make-arch-pkg.sh "$TAR" scripts/out/
 
       - name: Verify output
         if: steps.exists.outputs.skip != 'true'
@@ -139,7 +132,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CatPawAI-linux-${{ steps.arch.outputs.arch }}-${{ steps.discover.outputs.version }}
-          path: scripts/out/*.tar.gz
+          path: |
+            scripts/out/*.tar.gz
+            scripts/out/*.deb
+            scripts/out/*.pkg.tar.zst
           retention-days: 30
 
       - name: Create release

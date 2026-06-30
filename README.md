@@ -5,77 +5,81 @@
 ## 概述
 
 CatPawAI 是美团基于 VS Code (1.101.0) 开发的 AI IDE，使用 Electron 35.5.1。
-本构建系统从 macOS DMG 中提取应用资源，替换原生模块为 Linux 版本，生成可在 Linux 上运行的 tar.gz / deb 包。
+本构建系统从 macOS DMG 中提取应用资源，替换原生模块为 Linux 版本，生成可在 Linux 上运行的 tar.gz / deb / pacman 包。
 
 ### 工作原理
 
 ```
-macOS DMG                    Windows (7zip)              WSL2 (Ubuntu)
-┌─────────────┐              ┌──────────────┐            ┌──────────────────┐
-│ CatPawAI.app│  ──提取──→   │ extracted/   │  ──构建──→ │ Electron Linux   │
-│  Resources/ │              │   app/       │            │ + app/           │
-│    app/     │              │   icns       │            │ + Linux natives  │
-└─────────────┘              └──────────────┘            │ → tar.gz / .deb  │
-                                                         └──────────────────┘
+macOS DMG                         Linux (原生 or WSL2)
+┌─────────────┐                   ┌──────────────────────────┐
+│ CatPawAI.app│  ──7zip 解压──→   │ extracted/app/           │
+│  Resources/ │                   │                          │
+│    app/     │                   │   ┌── Electron Linux ──┐ │
+└─────────────┘                   │   │ + app/             │ │
+                                  │   │ + Linux natives    │ │
+                                  │   └────────────────────┘ │
+                                  │   → tar.gz / .deb / .pkg │
+                                  └──────────────────────────┘
 ```
 
-1. **提取** - 使用 7-Zip 从 DMG 中提取 `Contents/Resources/app/` 目录
+1. **提取** - 使用 7-Zip (p7zip) 从 DMG 中提取 `Contents/Resources/app/` 目录
 2. **下载** - 下载 Electron 35.5.1 Linux 版本
-3. **重建** - 在 WSL2 中重新编译所有原生模块（.node 文件）
+3. **重建** - 重新编译所有原生模块（.node 文件）为 Linux 版本
 4. **组装** - 将 Electron 运行时 + 应用代码 + Linux 原生模块组装为完整应用
-5. **打包** - 生成 tar.gz 和 .deb 安装包
+5. **打包** - 生成 tar.gz、.deb 安装包，以及 Arch pacman 包 (.pkg.tar.zst)
 
 ## 前置要求
 
-### Windows 端
-- **7-Zip** (`winget install 7zip.7zip`)
-- **WSL2** with Ubuntu (`wsl --install -d Ubuntu`)
-- **PowerShell 7+**
+### Linux（原生，推荐）
 
-### WSL2 内 (自动安装)
-- Node.js 22+
-- build-essential (gcc, g++, make)
-- Python 3
-- p7zip-full
+- **7-Zip** (`sudo apt install p7zip-full` / `pacman -S p7zip` / `dnf install p7zip`)
+- **Node.js 22+**
+- **build-essential** (gcc, g++, make) / Python 3
+- **zstd** + **libarchive** (提供 `bsdtar`，用于打 pacman 包；Debian 系为 `zstd` + `libarchive-tools`)
+- 构建脚本会在首次运行时自动安装其余依赖（libkrb5-dev、libxkbfile-dev 等）
+
+> 也支持在 WSL2 中运行：进入 WSL2 后照下面的 Linux 流程跑 `build-linux.sh` 即可，首次运行会自动安装同样的依赖。
 
 ## 使用方法
 
 ### 一键构建
 
-```powershell
-# 在 Windows PowerShell 中运行
+```bash
 cd CatPaw-Linux-Build
-.\build.ps1
+bash scripts/build-linux.sh
 ```
+
+脚本会依次完成：提取 DMG → 下载 Electron → 重建原生模块 → 组装应用 → 打包 tar.gz / deb / pacman 三种包。
 
 ### 指定架构
 
-```powershell
-.\build.ps1 -Arch x64    # 默认, 适用于大多数 Linux
-.\build.ps1 -Arch arm64  # ARM64 设备
+```bash
+bash scripts/build-linux.sh --arch x64     # 默认，适用于大多数 Linux
+bash scripts/build-linux.sh --arch arm64   # ARM64 设备
 ```
 
 ### 跳过已完成的步骤
 
-```powershell
+```bash
 # 跳过 DMG 提取（使用已提取的资源）
-.\build.ps1 -SkipExtract
+bash scripts/build-linux.sh --skip-extract
 
 # 跳过 Electron 下载（使用已下载的）
-.\build.ps1 -SkipDownload
-
-# 仅在 WSL2 中运行构建
-wsl bash -c "cd /mnt/c/LinuxBackup/catpaw-linux/CatPaw-Linux-Build/scripts && bash build-linux.sh --skip-extract"
+bash scripts/build-linux.sh --skip-download
 ```
 
-### 分步执行
+### 单独生成 Arch pacman 包
 
-```powershell
-# 1. 仅提取 DMG
-.\extract-dmg.ps1
+`build-linux.sh` 默认已经产出 pacman 包。如果只有 tar.gz 想转成 pacman 包，可单独调用：
 
-# 2. 在 WSL2 中构建
-wsl bash -c "cd /mnt/c/LinuxBackup/catpaw-linux/CatPaw-Linux-Build/scripts && bash build-linux.sh"
+```bash
+bash scripts/make-arch-pkg.sh scripts/out/CatPawAI-linux-x64-2026.2.3.tar.gz scripts/out/
+```
+
+也可直接传入已解压的 stage 目录：
+
+```bash
+bash scripts/make-arch-pkg.sh /path/to/stage scripts/out/
 ```
 
 ## 输出
@@ -86,8 +90,20 @@ wsl bash -c "cd /mnt/c/LinuxBackup/catpaw-linux/CatPaw-Linux-Build/scripts && ba
 |------|------|
 | `CatPawAI-linux-x64-2026.2.3.tar.gz` | 便携版，解压即用 |
 | `CatPawAI-linux-x64-2026.2.3.deb` | Debian/Ubuntu 安装包 |
+| `catpawai-2026.2.3-1-x86_64.pkg.tar.zst` | Arch Linux pacman 包 |
 
 ## 安装
+
+### Arch Linux (pacman)
+
+```bash
+sudo pacman -U catpawai-2026.2.3-1-x86_64.pkg.tar.zst
+
+# 运行（从应用菜单或终端）
+catpawai
+```
+
+pacman 包会安装到 `/usr/share/catpawai`，并在 `/usr/bin/catpawai` 创建符号链接到启动脚本。启动脚本会解析 symlink 自身位置，因此从 PATH 调用也能正确找到 Electron 二进制。
 
 ### tar.gz 方式
 
@@ -99,7 +115,7 @@ sudo tar xzf CatPawAI-linux-x64-2026.2.3.tar.gz -C /opt/
 sudo ln -sf /opt/CatPawAI-linux-x64/bin/catpawai /usr/local/bin/catpawai
 
 # 运行
-catpawai --no-sandbox
+catpawai
 ```
 
 ### deb 方式
@@ -108,8 +124,11 @@ catpawai --no-sandbox
 sudo dpkg -i CatPawAI-linux-x64-2026.2.3.deb
 
 # 运行（从应用菜单或终端）
-catpawai --no-sandbox
+catpawai
 ```
+
+> 三种安装方式都不需要 `--no-sandbox` 参数——启动脚本会自动加上。
+> 如果 Linux 上 `chrome-sandbox` 没有 setuid 权限，脚本会改用 `ELECTRON_DISABLE_SANDBOX=1`。
 
 ## 原生模块处理
 
@@ -129,6 +148,7 @@ catpawai --no-sandbox
 | `@dp/cat-client` | CAT 监控客户端 (已有 build_linux) |
 
 以下 Windows/macOS 专用模块会被移除：
+
 - `@vscode/windows-mutex`
 - `@vscode/windows-process-tree`
 - `@vscode/windows-registry`
@@ -140,14 +160,14 @@ catpawai --no-sandbox
 
 ```
 CatPaw-Linux-Build/
-├── build.ps1              # 一键构建入口 (Windows)
-├── extract-dmg.ps1        # DMG 提取脚本 (Windows)
 ├── package.json           # 构建项目配置
 ├── README.md              # 本文档
 ├── resources/             # 构建资源
 │   └── catpawai.png       # 应用图标 (可选)
 └── scripts/
-    ├── build-linux.sh     # 主构建脚本 (WSL2)
+    ├── build-linux.sh     # 主构建脚本 (Linux 原生 / WSL2)
+    ├── make-arch-pkg.sh   # 重新打包为 Arch pacman 包
+    ├── discover-dmg-url.sh # 自动发现最新 DMG 下载地址
     ├── extracted/         # DMG 提取结果 (自动生成)
     ├── downloads/         # Electron 下载缓存 (自动生成)
     ├── build/             # 构建中间产物 (自动生成)
@@ -156,7 +176,7 @@ CatPaw-Linux-Build/
 
 ## 已知限制
 
-- `--no-sandbox` 参数是必需的，因为 Linux 上 chrome-sandbox 需要 root 权限设置
+- `chrome-sandbox` 需要 setuid 才能用，否则启动脚本会自动切换到 `ELECTRON_DISABLE_SANDBOX=1`
 - SSO 登录功能可能需要额外的网络配置
 - 部分依赖 macOS 特有 API 的扩展可能无法正常工作
 - 自动更新功能在 Linux 上不可用
