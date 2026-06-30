@@ -798,7 +798,12 @@ fi
 log "${CYAN}== Build Complete! ==${NC}"
 echo ""
 echo "Output files:"
-ls -lh "$OUT_DIR"/*.tar.gz "$OUT_DIR"/*.deb "$OUT_DIR"/*.pkg.tar.zst 2>/dev/null
+# Use shopt nullglob so unmatched globs vanish instead of being passed literally
+# to ls (which would exit non-zero and trip `set -e`). Restore afterwards.
+__ng=$(shopt -p nullglob || true)
+shopt -s nullglob
+ls -lh "$OUT_DIR"/*.tar.gz "$OUT_DIR"/*.deb "$OUT_DIR"/*.pkg.tar.zst 2>/dev/null || true
+eval "$__ng"
 echo ""
 echo "App info:"
 echo "  Name:    CatPawAI"
