@@ -452,6 +452,47 @@ if [[ -d "$PTY_DIR" ]]; then
   fi
 fi
 
+# 4f. Rebuild extension-bundled sqlite3 (mt-idekit.mt-idekit-code)
+# The extension ships a prebuilt node_sqlite3.node in out/build/Release/.
+# On macOS this is a Mach-O binary; if left untouched the chat history
+# service fails with "无效的 ELF 头" / "Database is not a constructor".
+# The sqlite3 npm package uses N-API (node-addon-api), so a prebuilt N-API
+# binary is ABI-stable and works under Electron without electron headers.
+log "[4f] Rebuilding extension-bundled sqlite3 for Linux..."
+MTIDEKIT_EXT="$STAGE_DIR/resources/app/extensions/mt-idekit.mt-idekit-code"
+SQLITE3_NODE="$MTIDEKIT_EXT/out/build/Release/node_sqlite3.node"
+if [[ -f "$SQLITE3_NODE" ]]; then
+  if file "$SQLITE3_NODE" | grep -q "Mach-O"; then
+    log "   Found Mach-O sqlite3, rebuilding for Linux..."
+    cp "$SQLITE3_NODE" "${SQLITE3_NODE}.darwin.bak"
+    SQLITE3_BUILD="$BUILD_DIR/_sqlite3-build"
+    rm -rf "$SQLITE3_BUILD"
+    mkdir -p "$SQLITE3_BUILD"
+    # Unset electron build flags so prebuild-install downloads a stock N-API
+    # binary instead of compiling against electron headers (which can fail
+    # on Python 3.12+ where distutils was removed).
+    (
+      cd "$SQLITE3_BUILD"
+      unset npm_config_runtime npm_config_target npm_config_disturl npm_config_build_from_source
+      npm init -y >/dev/null 2>&1
+      npm install sqlite3 --no-save --no-optional 2>&1
+    ) || warn "   sqlite3 npm install failed"
+    BUILT_NODE=$(find "$SQLITE3_BUILD/node_modules/sqlite3" -name "node_sqlite3.node" -path "*/Release/*" 2>/dev/null | head -1)
+    if [[ -n "$BUILT_NODE" ]] && file "$BUILT_NODE" | grep -q "ELF"; then
+      cp "$BUILT_NODE" "$SQLITE3_NODE"
+      log "   ${GREEN}ok${NC}: node_sqlite3.node (Linux ELF)"
+    else
+      warn "   Rebuilt sqlite3 is not ELF — chat history may not work"
+    fi
+  elif file "$SQLITE3_NODE" | grep -q "ELF"; then
+    log "   sqlite3 already ELF, skipping"
+  else
+    warn "   sqlite3 unknown format, skipping"
+  fi
+else
+  log "   No bundled sqlite3 found, skipping"
+fi
+
 cd "$SCRIPT_DIR"
 
 #=============================================================================
@@ -577,6 +618,42 @@ fi
 
 if [ -n "$EXTRA_FEATURES" ]; then
   ARGS+=(--enable-features="$EXTRA_FEATURES")
+fi
+
+# ── IME (input method) support ──────────────────────────────────────────
+# Chromium/Electron on Wayland needs --enable-wayland-ime to activate the
+# Wayland text-input-v3 protocol that fcitx5 / ibus use. Without it, CJK
+# input methods cannot reach text fields — the classic "can't type Chinese
+# in an Electron app on Wayland" bug.
+#
+# On X11, Chromium talks to the IME through the GTK IM module and relies on
+# GTK_IM_MODULE / QT_IM_MODULE / XMODIFIERS being set. A launch from a
+# systemd unit or a minimal env may not inherit these from the session, so
+# auto-detect fcitx5 / ibus and fill them in if missing.
+
+detect_ime_env() {
+  [ -n "${GTK_IM_MODULE:-}" ] && [ -n "${QT_IM_MODULE:-}" ] && [ -n "${XMODIFIERS:-}" ] && return 0
+  if pgrep -x fcitx5 >/dev/null 2>&1; then
+    : "${GTK_IM_MODULE:=fcitx}"; : "${QT_IM_MODULE:=fcitx}"; : "${XMODIFIERS:=@im=fcitx}"
+  elif pgrep -x ibus-daemon >/dev/null 2>&1; then
+    : "${GTK_IM_MODULE:=ibus}"; : "${QT_IM_MODULE:=ibus}"; : "${XMODIFIERS:=@im=ibus}"
+  fi
+  export GTK_IM_MODULE QT_IM_MODULE XMODIFIERS
+}
+detect_ime_env
+
+# On Wayland, turn on native IME unless the user opts out
+# (CATPAWAI_DISABLE_WAYLAND_IME=1) or already passed the flag themselves.
+if [ "$OZONE_PLATFORM" = "wayland" ] && [ "${CATPAWAI_DISABLE_WAYLAND_IME:-0}" != "1" ]; then
+  _has_wayland_ime_flag=0
+  for _arg in "$@"; do
+    case "$_arg" in
+      --enable-wayland-ime|--wayland-text-input-version=*) _has_wayland_ime_flag=1 ;;
+    esac
+  done
+  if [ "$_has_wayland_ime_flag" = "0" ]; then
+    ARGS+=(--enable-wayland-ime)
+  fi
 fi
 
 # ── Launch ──────────────────────────────────────────────────────────────

@@ -147,6 +147,8 @@ catpawai
 | `@vscode/policy-watcher` | 策略监视 |
 | `@dp/cat-client` | CAT 监控客户端 (已有 build_linux) |
 
+此外，`mt-idekit.mt-idekit-code` 扩展内置了一个预编译的 `sqlite3` 原生模块（`out/build/Release/node_sqlite3.node`），用于聊天历史记录服务。该文件在 macOS DMG 中是 Mach-O 格式，构建脚本 Phase 4f 会自动检测并替换为 Linux ELF 版本（基于 N-API，ABI 稳定，兼容 Electron）。
+
 以下 Windows/macOS 专用模块会被移除：
 
 - `@vscode/windows-mutex`
@@ -173,6 +175,15 @@ CatPaw-Linux-Build/
     ├── build/             # 构建中间产物 (自动生成)
     └── out/               # 最终输出 (自动生成)
 ```
+
+## 输入法 (IME) 支持
+
+启动器自动处理 CJK 输入法（中文、日文、韩文）：
+
+- **Wayland**：自动添加 `--enable-wayland-ime` 启用 Wayland text-input-v3 协议，fcitx5 / ibus 可正常连接输入框。设置 `CATPAWAI_DISABLE_WAYLAND_IME=1` 可关闭。
+- **X11**：自动检测 fcitx5 / ibus 进程，若 `GTK_IM_MODULE` / `QT_IM_MODULE` / `XMODIFIERS` 未设置则自动补齐。
+
+> 这是 Electron on Wayland 经典的「打不出中文」问题的修复——不加 `--enable-wayland-ime`，Chromium 不会激活 text-input-v3 协议，输入法无法连接到编辑器输入框。
 
 ## 已知限制
 

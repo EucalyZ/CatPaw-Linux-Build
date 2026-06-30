@@ -146,6 +146,9 @@ log "Generating .MTREE..."
 
 PKG_PATH="$OUT_DIR/catpawai-${CATPAW_VERSION}-1-${PACMAN_ARCH}.pkg.tar.zst"
 mkdir -p "$OUT_DIR"
+# Remove any stale package — zstd refuses to overwrite an existing file when
+# reading from stdin ("already exists; stdin is an input - not proceeding").
+rm -f "$PKG_PATH"
 log "Creating $(basename "$PKG_PATH")..."
 
 # Create uncompressed .pkg.tar first, then zstd-compress. Older libarchive
