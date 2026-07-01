@@ -861,6 +861,11 @@ fi
 # 2. Locating the useState that initializes it:
 #    [VAR,X]=(0,r.useState)(!1),SETTER=(0,r.useCallback)(e=>{X(e)},[])
 # 3. Changing !1 (false) to !0 (true)
+# 4. Patching the TaskBlock useEffect that resets evaluationModeEnabled from
+#    incoming message props (PROPS.evaluationModeEnabled is false for normal
+#    conversations, which would override our forced true). The reset call
+#    "evaluationModeEnabled"in PROPS&&SETTER(PROPS.evaluationModeEnabled)
+#    is changed to SETTER(!0) so it always sets true.
 #
 # Side effects of evaluationModeEnabled=true:
 # - Auto-retry: 3 retries, 3s interval (desired)
@@ -911,6 +916,24 @@ if old == new:
     sys.exit(1)
 
 content = content.replace(old, new, 1)
+
+# Step 3: Patch the reset call in TaskBlock useEffect
+# When a message arrives, TaskBlock calls:
+#   "evaluationModeEnabled"in PROPS&&SETTER(PROPS.evaluationModeEnabled)
+# For normal conversations PROPS.evaluationModeEnabled is false, which resets
+# the state we just forced to true. Patch it to always pass true.
+reset_pattern = r'"evaluationModeEnabled"in ([a-zA-Z_$][a-zA-Z0-9_$]*)&&([a-zA-Z_$][a-zA-Z0-9_$]*)\(\1\.evaluationModeEnabled\)'
+reset_match = re.search(reset_pattern, content)
+if reset_match:
+    old_reset = reset_match.group(0)
+    new_reset = old_reset.replace(
+        f"{reset_match.group(2)}({reset_match.group(1)}.evaluationModeEnabled)",
+        f"{reset_match.group(2)}(!0)"
+    )
+    content = content.replace(old_reset, new_reset, 1)
+    print(f"   Patched: reset call {reset_match.group(2)}(props.evaluationModeEnabled) -> {reset_match.group(2)}(!0)")
+else:
+    print("   WARN: reset call pattern not found (may already be patched or version mismatch)")
 
 with open(path, "w") as f:
     f.write(content)
