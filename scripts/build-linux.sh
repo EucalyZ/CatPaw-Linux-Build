@@ -756,6 +756,177 @@ rm -f "$STAGE_DIR/resources/default_app.asar" 2>/dev/null || true
 find "$STAGE_DIR" -name ".DS_Store" -delete 2>/dev/null || true
 find "$STAGE_DIR" -name "._*" -delete 2>/dev/null || true
 
+# 5h. Patch Auto-Run: bypass OFFICIAL_DENY_LIST so all commands auto-execute
+#
+# CatPaw's Agent has a hardcoded OFFICIAL_DENY_LIST (rm, rmdir, mv, kill,
+# shutdown, reboot, pip uninstall, npm uninstall, strace, make clean, dd,
+# chmod 777, chown, su, sudo) that always requires manual approval even when
+# Auto-Run is enabled. To allow ALL commands to auto-execute on Linux, we
+# patch shouldAskApprovalForCommand() to always return false (never ask).
+# This bypasses ALL checks: allowCommandRun, deleteFileProtection,
+# commandDenylist, commandAllowlist, and OFFICIAL_DENY_LIST.
+#
+# There are two variants of shouldAskApprovalForCommand in the minified bundle:
+#   - class I (RunTerminalCmdTool): shouldAskApprovalForCommand(e,t){...}
+#   - class m (ExecuteCommand):      shouldAskApprovalForCommand(e,t,n){...}
+# Both are replaced with a body that unconditionally returns false.
+log "[5h] Patching Auto-Run approval logic..."
+MTIDEKIT_AGENT_JS=$(find "$STAGE_DIR/resources/app/extensions/mt-idekit.mt-idekit-code/out/ui/agent/js" \
+  -name 'main.*.js' -type f 2>/dev/null | head -1)
+if [[ -n "$MTIDEKIT_AGENT_JS" ]]; then
+  python3 - "$MTIDEKIT_AGENT_JS" << 'AUTORUN_PATCH'
+import sys
+
+path = sys.argv[1]
+with open(path, "r") as f:
+    content = f.read()
+
+# --- Pattern 1: class I (RunTerminalCmdTool) ---
+# Full original: checks allowCommandRun, deleteFileProtection, commandDenylist,
+# commandAllowlist, OFFICIAL_DENY_LIST — returns true (ask) if any deny matches.
+old1 = (
+    'shouldAskApprovalForCommand(e,t){try{'
+    'if(!t.allowCommandRun)return!0;'
+    'const n=I.parseCommandNames(e);'
+    'if(t.deleteFileProtection&&I.checkCommandNamesInList(n,I.DELETE_COMMANDS))return!0;'
+    'if(I.checkCommandInDenylist(e,t.commandDenylist))return!0;'
+    'if(I.checkCommandNamesInList(n,t.commandAllowlist))return!1;'
+    'if(I.checkCommandNamesInList(n,I.OFFICIAL_DENY_LIST))return!0'
+    '}catch(n){return!1}return!1}'
+)
+new1 = 'shouldAskApprovalForCommand(e,t){return!1}'
+
+# --- Pattern 2: class m (ExecuteCommand) ---
+# Same logic but different implementation using regex-based splitting.
+old2 = (
+    r'shouldAskApprovalForCommand(e,t,n){'
+    r'const i=(e,t)=>e.split(/\s*(?:&&|\||;|\|\|)\s*/)'
+    r'.some(e=>t.some(t=>new RegExp("(^|\\s+)".concat(t,"(?=\\s+|$)"))'
+    r'.test(e.trim())));'
+    r'return!t.allowCommandRun||(!(!t.deleteFileProtection||!i(e,["rm","del","rmdir","unlink"]))'
+    r'||(!!i(e,[])||!i(e,[])&&(!!i(e,t.commandDenylist)||(i(e,t.commandAllowlist),!1))))}'
+)
+new2 = 'shouldAskApprovalForCommand(e,t,n){return!1}'
+
+c1 = content.count(old1)
+c2 = content.count(old2)
+patched = 0
+
+if c1 > 0:
+    content = content.replace(old1, new1)
+    patched += c1
+    print(f"   Patched class I shouldAskApprovalForCommand ({c1} occurrence)")
+else:
+    print("   WARN: class I pattern not found (version mismatch?)")
+
+if c2 > 0:
+    content = content.replace(old2, new2)
+    patched += c2
+    print(f"   Patched class m shouldAskApprovalForCommand ({c2} occurrence)")
+else:
+    print("   WARN: class m pattern not found (version mismatch?)")
+
+if patched > 0:
+    with open(path, "w") as f:
+        f.write(content)
+    print(f"   Total patches applied: {patched}")
+else:
+    print("   ERROR: No patches applied — file left unchanged")
+    sys.exit(1)
+AUTORUN_PATCH
+  if [[ $? -eq 0 ]]; then
+    log "   ${GREEN}ok${NC}: Auto-Run patched — all commands auto-execute without approval"
+  else
+    warn "   Auto-Run patch failed — commands in OFFICIAL_DENY_LIST will still require approval"
+  fi
+else
+  warn "   Agent main.js not found — skipping Auto-Run patch"
+fi
+
+# 5i. Patch evaluationModeEnabled: force-enable for auto-retry on network errors
+#
+# CatPaw's Agent has an "evaluation mode" (evaluationModeEnabled) that, when
+# true, automatically retries failed stream requests up to 3 times with a 3s
+# interval. This mode is only activated for TestAgent (unit test generation)
+# workflows and has no UI toggle for normal conversations.
+#
+# We force evaluationModeEnabled = true from the start so that normal
+# conversations also get auto-retry on network errors (StreamNetWorkError,
+# StreamError, etc.). Without this, a network hiccup shows an error UI and
+# requires the user to manually click "继续对话" or "重试对话".
+#
+# The patch works by:
+# 1. Finding the variable name for evaluationModeEnabled in the hook's return
+#    object: evaluationModeEnabled:VAR,changeEvaluationModeEnabled:SETTER
+# 2. Locating the useState that initializes it:
+#    [VAR,X]=(0,r.useState)(!1),SETTER=(0,r.useCallback)(e=>{X(e)},[])
+# 3. Changing !1 (false) to !0 (true)
+#
+# Side effects of evaluationModeEnabled=true:
+# - Auto-retry: 3 retries, 3s interval (desired)
+# - requestLoading treats retrying as still loading (desired)
+# - Tool execution skips askMode confirmation (redundant with Phase 5h Auto-Run patch)
+log "[5i] Patching evaluationModeEnabled for auto-retry..."
+if [[ -n "$MTIDEKIT_AGENT_JS" ]]; then
+  python3 - "$MTIDEKIT_AGENT_JS" << 'EVALMODE_PATCH'
+import re, sys
+
+path = sys.argv[1]
+with open(path, "r") as f:
+    content = f.read()
+
+# Step 1: Find the variable names from the hook's return object
+# Pattern: evaluationModeEnabled:STATE_VAR,changeEvaluationModeEnabled:SETTER_VAR
+m = re.search(
+    r'evaluationModeEnabled:([a-zA-Z_$][a-zA-Z0-9_$]*),'
+    r'changeEvaluationModeEnabled:([a-zA-Z_$][a-zA-Z0-9_$]*)',
+    content
+)
+if not m:
+    print("   ERROR: Could not find evaluationModeEnabled in return object")
+    sys.exit(1)
+
+state_var = m.group(1)    # e.g. "n"
+setter_var = m.group(2)   # e.g. "b"
+
+# Step 2: Find the useState + useCallback pattern
+# [state_var, inner_setter] = (0,r.useState)(!1), setter_var = (0,r.useCallback)(e=>{inner_setter(e)},[])
+pattern = (
+    rf'\[{re.escape(state_var)},([a-zA-Z_$][a-zA-Z0-9_$]*)\]'
+    r'=\(0,r\.useState\)\(!1\),'
+    rf'{re.escape(setter_var)}'
+    r'=\(0,r\.useCallback\)\(e=>\{\1\(e\)\},\[\]\)'
+)
+
+m2 = re.search(pattern, content)
+if not m2:
+    print(f"   ERROR: Could not find useState pattern for {state_var}/{setter_var}")
+    sys.exit(1)
+
+old = m2.group(0)
+new = old.replace('(!1)', '(!0)')
+
+if old == new:
+    print("   ERROR: Pattern found but replacement produced no change")
+    sys.exit(1)
+
+content = content.replace(old, new, 1)
+
+with open(path, "w") as f:
+    f.write(content)
+
+print(f"   Patched: [{state_var},...] = useState(false) → useState(true)")
+print(f"   evaluationModeEnabled now defaults to true in all conversations")
+EVALMODE_PATCH
+  if [[ $? -eq 0 ]]; then
+    log "   ${GREEN}ok${NC}: evaluationModeEnabled forced true — auto-retry on network errors"
+  else
+    warn "   evaluationModeEnabled patch failed — network errors will require manual retry"
+  fi
+else
+  warn "   Agent main.js not found — skipping evaluationModeEnabled patch"
+fi
+
 #=============================================================================
 # Phase 6: Package
 #=============================================================================

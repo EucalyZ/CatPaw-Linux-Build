@@ -192,6 +192,41 @@ CatPaw-Linux-Build/
 - 部分依赖 macOS 特有 API 的扩展可能无法正常工作
 - 自动更新功能在 Linux 上不可用
 
+## Auto-Run 补丁 (Phase 5h)
+
+CatPaw Agent 的 Auto-Run 功能在执行终端命令前会调用 `shouldAskApprovalForCommand()` 判断是否需要用户手动确认。除了用户可配置的 `commandAllowlist` / `commandDenylist` 外，还有一个 **硬编码的 `OFFICIAL_DENY_LIST`**：
+
+```
+rm, rmdir, mv, kill, shutdown, reboot,
+pip uninstall, npm uninstall, strace, make clean,
+dd, chmod 777, chown, su, sudo
+```
+
+这些命令即使开启了 Auto-Run 也必须手动确认，无法通过 UI 绕过。
+
+构建脚本 Phase 5h 会在移植阶段自动 patch 这两个 `shouldAskApprovalForCommand` 函数，使其直接返回 `false`（永不询问），从而让所有命令（包括 `OFFICIAL_DENY_LIST` 中的）都能自动执行。由于整个函数体被替换，`commandDenylist`、`deleteFileProtection` 等所有检查均被跳过——即 **所有命令无条件自动执行**。
+
+> **注意**：此补丁仅修改构建产物中的 minified JS，不修改原始 DMG 中的文件。如果 CatPaw 版本更新导致 minified 函数签名变化，patch 会打印 WARN 但不会中断构建。
+
+## 自动重试补丁 (Phase 5i)
+
+CatPaw Agent 的流式接口在网络中断时会抛出 `TypeError("network error")`，触发 `StreamNetWorkError` 错误。正常模式下，错误显示后等待用户手动点击"继续对话"或"重试对话"。
+
+CatPaw 内部有一个 `evaluationModeEnabled` 状态（评测模式），开启后会在流式错误时 **自动重试，最多 3 次，间隔 3 秒**。但此模式仅对 TestAgent（单测生成）场景自动激活，正常对话无法通过 UI 开启。
+
+构建脚本 Phase 5i 会 patch hook 函数中的 `useState(!1)` 初始化，将 `evaluationModeEnabled` 的默认值从 `false` 改为 `true`，使所有对话都获得自动重试能力。
+
+patch 通过以下步骤精确定位（不依赖 minified 变量名）：
+1. 从 hook 返回对象中提取 `evaluationModeEnabled:VAR` 的变量名
+2. 用正则匹配 `[VAR,X]=(0,r.useState)(!1),SETTER=(0,r.useCallback)(e=>{X(e)},[])`
+3. 将 `!1`（false）替换为 `!0`（true）
+
+| 效果 | 说明 |
+|---|---|
+| 自动重试 | 流式网络错误后自动重试 3 次，间隔 3 秒 |
+| 加载状态 | 重试期间 UI 保持加载状态，不显示错误 |
+| 工具审批跳过 | 与 Phase 5h 冗余（已通过 Auto-Run patch 处理） |
+
 ## 技术细节
 
 - **Electron**: 35.5.1
